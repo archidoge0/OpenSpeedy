@@ -1,0 +1,80 @@
+name: GHAV OpenSpeedy 114 installer human
+on:
+  push:
+    branches:
+      - codex/ghav-openspeedy114-human
+permissions:
+  contents: read
+jobs:
+  installer:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - name: Checkout fixed historical Before source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 818af6e29eb30bcbacede09a5238dc3baf7e5065
+          persist-credentials: false
+      - name: Set up fixed Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13.16'
+      - name: Fixed-context witness
+        shell: pwsh
+        run: |
+          Write-Host "source_sha=$(git rev-parse HEAD)"
+          Write-Host "evaluation_sha=$env:GITHUB_SHA"
+          Write-Host "runner_image=$env:ImageOS/$env:ImageVersion"
+          Write-Host "python_version=$(python --version)"
+      - name: Prepare common fixed signed-artifact input
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path signed-artifacts -Force | Out-Null
+          [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'signed-artifacts/OpenSpeedy.exe'), 'GHAV fixed signed-artifact input fixture for OpenSpeedy #114 v1', [System.Text.Encoding]::ASCII)
+          Get-FileHash signed-artifacts/OpenSpeedy.exe -Algorithm SHA256 | ForEach-Object { Write-Host "payload_sha256=$($_.Hash.ToLower())" }
+      - name: Cache Qt Installer Framework
+        id: cache-qtifw
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ github.workspace }}/Qt/Tools/QtInstallerFramework
+          key: qtifw-4.7.0-${{ runner.os }}
+          restore-keys: |
+            qtifw-4.7.0-
+            qtifw-
+      - name: Qt IFW cache witness
+        shell: pwsh
+        run: Write-Host 'qtifw_cache_hit=${{ steps.cache-qtifw.outputs.cache-hit }}'
+      - name: Install Qt Installer Framework 4.7
+        if: steps.cache-qtifw.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check aqtinstall==3.3.0
+          python -m aqt install-tool -O "${{ github.workspace }}/Qt/" windows desktop tools_ifw qt.tools.ifw.47
+          python -m pip freeze | Select-String 'aqtinstall|py7zr|semantic-version|requests'
+      - name: Package installer
+        shell: pwsh
+        run: |
+          $ifwBin = Join-Path $env:GITHUB_WORKSPACE 'Qt/Tools/QtInstallerFramework/4.7/bin'
+          $binaryCreator = Join-Path $ifwBin 'binarycreator.exe'
+          if (-not (Test-Path $binaryCreator)) { throw "Qt IFW binarycreator missing: $binaryCreator" }
+          Copy-Item -Path 'signed-artifacts/*' -Destination 'installer/packages/com.openspeedy.app/data/' -Recurse -Force
+          $version = '1.0.0'
+          $configXmlPath = 'installer/config/config.xml'
+          [xml]$configXml = Get-Content $configXmlPath
+          $configXml.Installer.Version = $version
+          $configXml.Save((Resolve-Path $configXmlPath))
+          $packageXmlPath = 'installer/packages/com.openspeedy.app/meta/package.xml'
+          [xml]$packageXml = Get-Content $packageXmlPath
+          $packageXml.Package.Version = $version
+          $packageXml.Save((Resolve-Path $packageXmlPath))
+          & $binaryCreator -c $configXmlPath -p 'installer/packages' 'OpenSpeedy-installer-1.0.0.exe'
+          if ($LASTEXITCODE -ne 0) { throw "binarycreator exit code $LASTEXITCODE" }
+      - name: Verify and fingerprint installer
+        shell: pwsh
+        run: |
+          $path = 'OpenSpeedy-installer-1.0.0.exe'
+          if (-not (Test-Path $path)) { throw 'Installer output missing' }
+          $file = Get-Item $path
+          if ($file.Length -le 0) { throw 'Installer output empty' }
+          Write-Host "installer_size_bytes=$($file.Length)"
+          Get-FileHash $path -Algorithm SHA256 | ForEach-Object { Write-Host "installer_sha256=$($_.Hash.ToLower())" }
